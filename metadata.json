@@ -1,0 +1,6 @@
+{
+  "name": "SONIX Lab",
+  "description": "مختبر SONIX GStreamer Lab لاختبار استبدال واستخراج مسارات الصوت عبر GStreamer من اشتراك IPTV واحد",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
