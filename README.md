@@ -1,101 +1,30 @@
-# SONIX TV — مشغل البث التلفزيوني المباشر وIPTV الاحترافي
+# SONIX GStreamer Lab
 
-تطبيق تلفزيوني متطور لنظام Android وAndroid TV مبني باستخدام محرك الوسائط **AndroidX Media3 (ExoPlayer)** مع واجهة تفاعلية خفيفة تدعم أجهزة التلفاز (D-pad remote control) والأجهزة اللوحية والهواتف المحمولة.
+تطبيق Android تجريبي خفيف لاختبار استخراج واستبدال مسارات الصوت عبر **GStreamer 1.28.9** من اشتراك IPTV واحد (Xtream Codes أو رابط M3U واحد).
 
----
+## المعمارية
 
-## 🌟 المميزات الرئيسية
+- **Video Pipeline A (`playbin` / `glimagesink` / `ANativeWindow`):** تشغيل فيديو القناة الأساسية مع إمكانية كتم صوتها (`mute`) دون إعادة تشغيل الفيديو.
+- **Audio Pipeline B (`souphttpsrc` -> `decodebin` -> `audioconvert` -> `audioresample` -> `openslessink` / `aaudiosink`):** استخراج وتشغيل الصوت من القناة المختارة بشكل مستقل مع ضبط التأخير (ms) والمزامنة.
+- **واجهة Jetpack Compose (شاشة واحدة):** حقول اشتراك IPTV، قائمة القنوات، عارض الفيديو، اختيار مصدر الصوت البديل، التحكم بالتأخير، مؤشرات الحالة، وسجل تشخيصي مختصر.
 
-1. **محرك أصلي موحد (Media3 ExoPlayer):**
-   - تشغيل مباشر لجميع مصادر البث التلفزيوني (IPTV Live Streams) بصيغ HLS وMPEG-TS وDASH.
-   - تشغيل مكتبة الأفلام والمسلسلات (VOD) مع دعم التقديم والإرجاع (Seek).
-   - عرض الفيديو مباشرة عبر `PlayerView` (سطح `TextureView`) عالي الأداء مع قص متزامن بحواف دائرية تتطابق تماماً مع واجهة التطبيق.
-   - دعم التكبير لملء الشاشة مع شريط تحكم أفقي زجاجي ذكي يختفي تلقائياً.
+## البنية الأساسية
 
-2. **نظام الصوت الخارجي المزدوج (Dual Audio Engine):**
-   - تشغيل قناة صوتية مستقلة مباشرة عبر مشغل Media3 ثانٍ، بالتوازي مع مشغل الفيديو الأساسي.
-   - لا يوجد مسار استخراج PCM أو إعادة ترميز AAC أو خادم صوت محلي؛ يحتفظ Media3 بترميز المصدر الأصلي ويعالج التشغيل مباشرة.
-   - كتم مسار الصوت في مشغل الفيديو عند نجاح تشغيل المصدر الصوتي المستقل، مع دعم ضبط التأخير.
+- `app/src/main/jni/sonix_gstreamer.c` & `Android.mk`: طبقة JNI ومسارات GStreamer المزدوجة.
+- `app/prebuiltJniLibs/{arm64-v8a,armeabi-v7a}/`: ثنائيات `libgstreamer_android.so` و`libsonix_gst.so` المبنية مسبقاً للعمل في بيئات CI مثل GitHub Actions.
+- `app/src/main/java/com/example/gst/`: جسر GStreamer وإدارة حالتي الفيديو والصوت.
+- `app/src/main/java/com/example/iptv/`: عميل Xtream Codes ومحلل قوائم M3U.
+- `app/src/main/java/com/example/ui/`: واجهة الشاشة الواحدة بـ Jetpack Compose.
+- `.github/workflows/android-apk.yml`: تشغيل اختبارات الوحدة وبناء Debug APK على GitHub Actions (مع دعم Release APK عند توفر أسرار التوقيع).
 
-3. **أمان تام وحماية البيانات والخصوصية:**
-   - حفظ بيانات خادم Xtream Codes مشفرة داخل التخزين المحلي الآمن عبر مفتاح عتادي **AES-GCM 128-bit** مُدار بواسطة **Android Keystore**.
-   - عدم تمرير كلمات المرور أو روابط البث الحساسة إلى طبقة JavaScript؛ يتم تحضير الروابط وتمريرها مباشرة داخل الكود الأصلي عبر معرّفات المحتوى.
-   - استبعاد ملف الجلسة المشفرة من النسخ الاحتياطي السحابي لمنع تعطل فك التشفير عند استعادة النظام على جهاز جديد.
-   - حماية كاملة من هجمات XSS عبر إنشاء عناصر البحث وقوائم المحتوى برمجياً باستخدام `document.createElement` و`textContent` والربط المباشر للأحداث.
+## البناء والاختبار
 
-4. **تجربة استخدام متوافقة مع أجهزة التلفاز والهاتف:**
-   - تنقل ذكي عبر أزرار التحكم بالريموت (D-Pad) مع حبس التركيز داخل النوافذ المنبثقة.
-   - دعم كامل للغة العربية واتجاه اليمين إلى اليسار (RTL).
-   - شعار ولافتة مخصصة لشاشات التلفاز الذكية (`android:banner`).
-
----
-
-## 📁 بنية المشروع
-
-```
-├── app/
-│   ├── src/
-│   │   ├── main/
-│   │   │   ├── assets/
-│   │   │   │   ├── sonix_tv.html   # هيكل الواجهة الأساسي
-│   │   │   │   ├── styles.css      # تصميم وتنسيقات الواجهة ونظام الألوان
-│   │   │   │   └── app.js          # منطق التطبيق والتنقل والتحكم
-│   │   │   ├── java/com/example/
-│   │   │   │   ├── MainActivity.kt            # النشاط الرئيسي، مشغل Media3 وإدارة النوافذ
-│   │   │   │   ├── XtreamBridge.kt            # جسر Xtream Codes وتشفير Keystore الآمن
-│   │   │   │   ├── XtreamAccountValidator.kt  # فحص وتحقق صلاحية حسابات واشتراكات Xtream
-│   │   │   │   ├── PreviewLayoutCalculator.kt # حساب أبعاد المعاينة وضمان عدم خروجها عن الشاشة
-│   │   │   │   └── model/                     # نماذج بيانات القنوات والوسائط
-│   │   │   └── res/
-│   │   │       ├── layout/native_player_view.xml # تخطيط PlayerView الأصلي
-│   │   │       ├── drawable/banner.xml           # لافتة Android TV الرئيسية
-│   │   │       └── xml/                          # قواعد النسخ الاحتياطي الآمنة
-│   │   └── test/java/com/example/                # اختبارات الوحدة لـ JVM وRobolectric
-├── .github/workflows/android-apk.yml             # مسار البناء التلقائي والفحص الأمني في CI
-└── README.md                                     # دليل التوثيق والتشغيل
-```
-
----
-
-## 🔒 سياسة الأمان والخصوصية
-
-- **حفظ بيانات الاعتماد:** تُحفظ بيانات الدخول (عنوان الخادم، اسم المستخدم، كلمة المرور) في `SharedPreferences` باسم `sonix_secure_account` مشفرة بخوارزمية `AES/GCM/NoPadding`. المفتاح السري يُنشأ ويُحفظ داخل `AndroidKeyStore` المشفر عتادياً بالمعرف `sonix_xtream_credentials`.
-- **النسخ الاحتياطي:** تم استبعاد ملف `sonix_secure_account.xml` في `backup_rules.xml` و`data_extraction_rules.xml` لأن مفاتيح Keystore لا تنتقل بين الأجهزة أو بعد إعادة ضبط المصنع.
-- **إعدادات WebView:** تم تعطيل `allowFileAccess` و`allowContentAccess`، وتحديد وضع المحتوى المختلط إلى الوضع الآمن، لمنع أي محاولة وصول غير مصرح بها للملفات المحلية.
-- **فصل الروابط الحساسة:** لا تصل روابط البث التي تحتوي على كلمة المرور إلى كود JavaScript؛ يتم طلب التشغيل عبر `NativePlayback.playStream(type, streamId, extension)` ويتولى المحرك الأصلي إنشاء الرابط وتمريره إلى مشغل Media3.
-
----
-
-## 🛠️ متطلبات وطريقة البناء
-
-### المتطلبات:
-- **JDK 17** (مثال: Eclipse Temurin 17)
-- **Android SDK:** Compile SDK 36، Min SDK 24
-- **Gradle:** الإصدار 8.x أو 9.x عبر الأمر `gradle`
-
-### أوامر البناء:
-- **تشغيل اختبارات الوحدة:**
+- **اختبارات الوحدة:**
   ```bash
-  gradle testDebugUnitTest
+  gradle :app:testDebugUnitTest
   ```
-- **إنشاء APK للتجربة والتطوير (Debug):**
+- **بناء Debug APK:**
   ```bash
-  gradle assembleDebug
+  gradle :app:assembleDebug
   ```
-  يتم إنتاج ملف الـ APK في المسار:
-  `app/build/outputs/apk/debug/app-debug.apk`
-
-- **توليد إصدار الإنتاج (Release):**
-  يتم تعيين متغيرات البيئة لشهادة التوقيع:
-  `KEYSTORE_PATH` و`STORE_PASSWORD` و`KEY_PASSWORD` ثم تشغيل:
-  ```bash
-  gradle assembleRelease
-  ```
-
----
-
-## 📺 أذونات التطبيق
-
-- `android.permission.INTERNET`: للاتصال بخوادم البث التلفزيوني ومزود Xtream Codes.
-- `android.permission.ACCESS_NETWORK_STATE`: للتحقق من حالة اتصال الشبكة والإنترنت قبل إجراء الطلبات.
-- `android.permission.MODIFY_AUDIO_SETTINGS`: للتحكم في مستويات الصوت وتبديل مسارات الصوت الخارجي المزدوج.
+  المخرج: `app/build/outputs/apk/debug/app-debug.apk`
