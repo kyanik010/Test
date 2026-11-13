@@ -42,6 +42,7 @@ class MainActivity : ComponentActivity() {
                     onDetachAudioOnly = viewModel::detachExternalAudioOnly,
                     onTestAudioReconnect = viewModel::testAudioReconnect,
                     onTogglePause = viewModel::toggleVideoPause,
+                    onToggleAudioPause = viewModel::toggleAudioPause,
                     onDelayChange = viewModel::setAudioDelayMs,
                     onDelayStep = viewModel::adjustAudioDelayMs,
                     onClearLogs = viewModel::clearLogs,

@@ -26,29 +26,43 @@ android {
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
     ndk {
-      abiFilters += listOf("armeabi-v7a", "arm64-v8a")
+      abiFilters.clear()
+      abiFilters += listOf("arm64-v8a")
     }
 
     externalNativeBuild {
       ndkBuild {
         targets += listOf("sonix_gst")
-        arguments += listOf("GSTREAMER_ROOT_ANDROID=/opt/gstreamer-android")
+        val resolvedGstRoot = System.getenv("GSTREAMER_ROOT_ANDROID") ?: "/opt/gstreamer-android"
+        arguments += listOf(
+          "GSTREAMER_ROOT_ANDROID=$resolvedGstRoot",
+          "APP_ABI=arm64-v8a",
+          "APP_STL=c++_shared"
+        )
       }
     }
   }
 
   val gstreamerRoot = System.getenv("GSTREAMER_ROOT_ANDROID") ?: "/opt/gstreamer-android"
-  val hasGstreamerNdk = file("$gstreamerRoot/arm64").exists() &&
-    (System.getenv("ANDROID_NDK_HOME") != null || file("/opt/android/sdk/ndk/27.2.12479018").exists())
+  val gstreamerArm64Mk = file("$gstreamerRoot/arm64/share/gst-android/ndk-build/gstreamer-1.0.mk")
 
-  if (hasGstreamerNdk) {
-    externalNativeBuild {
-      ndkBuild {
-        path = file("src/main/jni/Android.mk")
+  externalNativeBuild {
+    ndkBuild {
+      path = file("src/main/jni/Android.mk")
+    }
+  }
+
+  tasks.configureEach {
+    if (name.startsWith("externalNativeBuild") || name.startsWith("configureNdkBuild")) {
+      doFirst {
+        if (!gstreamerArm64Mk.exists()) {
+          throw GradleException(
+            "Missing GStreamer Android ARM64 SDK at '$gstreamerRoot/arm64'. " +
+              "Expected '$gstreamerArm64Mk'. Prebuilt fallback is disabled to guarantee C sources are compiled."
+          )
+        }
       }
     }
-  } else {
-    sourceSets["main"].jniLibs.srcDirs("prebuiltJniLibs")
   }
 
   // Do not remove or modify these signingConfigs. They are necessary for building, installing,

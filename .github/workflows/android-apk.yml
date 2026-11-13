@@ -1,4 +1,4 @@
-name: Android APK and unit tests
+name: Android ARM64 NDK Build and Tests
 
 on:
   push:
@@ -13,6 +13,11 @@ on:
 
 permissions:
   contents: read
+
+env:
+  GSTREAMER_VERSION: "1.28.9"
+  GSTREAMER_ROOT_ANDROID: "/opt/gstreamer-android"
+  NDK_VERSION: "27.2.12479018"
 
 jobs:
   build-and-test:
@@ -32,6 +37,33 @@ jobs:
         with:
           gradle-version: "9.3.1"
 
+      - name: Install native build prerequisites (pkg-config, binutils)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq pkg-config xz-utils binutils
+
+      - name: Set up Android NDK ${{ env.NDK_VERSION }}
+        run: |
+          yes | "${ANDROID_SDK_ROOT:-$ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --install "ndk;${{ env.NDK_VERSION }}"
+          test -d "${ANDROID_SDK_ROOT:-$ANDROID_HOME}/ndk/${{ env.NDK_VERSION }}"
+
+      - name: Cache GStreamer Android ARM64 SDK (${{ env.GSTREAMER_VERSION }})
+        id: gst-cache
+        uses: actions/cache@v4
+        with:
+          path: /opt/gstreamer-android
+          key: gst-android-${{ env.GSTREAMER_VERSION }}-arm64
+
+      - name: Download and extract GStreamer Android ARM64 SDK
+        if: steps.gst-cache.outputs.cache-hit != 'true'
+        run: |
+          sudo mkdir -p /opt/gstreamer-android
+          sudo chown "$(id -u):$(id -g)" /opt/gstreamer-android
+          curl -fsSL "https://gstreamer.freedesktop.org/data/pkg/android/${{ env.GSTREAMER_VERSION }}/gstreamer-1.0-android-universal-${{ env.GSTREAMER_VERSION }}.tar.xz" -o "$RUNNER_TEMP/gst-android.tar.xz"
+          tar -xJf "$RUNNER_TEMP/gst-android.tar.xz" -C /opt/gstreamer-android arm64
+          rm -f "$RUNNER_TEMP/gst-android.tar.xz"
+          test -f /opt/gstreamer-android/arm64/share/gst-android/ndk-build/gstreamer-1.0.mk
+
       - name: Prepare debug keystore
         run: |
           if [ ! -f debug.keystore ]; then
@@ -50,8 +82,38 @@ jobs:
             fi
           fi
 
-      - name: Run unit tests and assemble Debug APK
+      - name: Compile C/JNI (libsonix_gst.so + libgstreamer_android.so), run unit tests, and build Debug APK
         run: gradle --no-daemon :app:testDebugUnitTest :app:assembleDebug
+
+      - name: Verify APK native libraries (ARM64 only + libc++_shared.so + ELF NEEDED deps)
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+          test -f "$APK"
+          unzip -l "$APK" | grep -E "lib/|ca-certificates"
+
+          if unzip -l "$APK" | grep -E "lib/(armeabi-v7a|x86|x86_64)/"; then
+            echo "ERROR: Forbidden non-ARM64 native libraries found in APK!"
+            exit 1
+          fi
+
+          rm -rf "$RUNNER_TEMP/apk-libs"
+          unzip -q "$APK" "lib/arm64-v8a/*.so" "assets/ssl/certs/ca-certificates.crt" -d "$RUNNER_TEMP/apk-libs"
+
+          for req in libc++_shared.so libgstreamer_android.so libsonix_gst.so; do
+            test -f "$RUNNER_TEMP/apk-libs/lib/arm64-v8a/$req" || {
+              echo "ERROR: Missing lib/arm64-v8a/$req in APK!"
+              exit 1
+            }
+          done
+          test -f "$RUNNER_TEMP/apk-libs/assets/ssl/certs/ca-certificates.crt"
+
+          for so in "$RUNNER_TEMP/apk-libs/lib/arm64-v8a/"*.so; do
+            echo "=== Inspecting ELF: $so ==="
+            readelf -h "$so" | grep -E "Class:|Machine:"
+            readelf -h "$so" | grep -q "AArch64" || { echo "ERROR: $so is not AArch64!"; exit 1; }
+            readelf -d "$so" | grep NEEDED || true
+          done
 
       - name: Upload unit test report
         if: always()
@@ -62,10 +124,10 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-      - name: Upload Debug APK
+      - name: Upload ARM64 Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: sonix-gstreamer-lab-debug-apk
+          name: sonix-gstreamer-lab-arm64-debug-apk
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14

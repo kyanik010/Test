@@ -1,29 +1,23 @@
-# SONIX GStreamer Lab
+# SONIX GStreamer Lab (ARM64)
 
-تطبيق Android تجريبي خفيف لاختبار استخراج واستبدال مسارات الصوت عبر **GStreamer 1.28.9** من اشتراك IPTV واحد (Xtream Codes أو رابط M3U واحد).
+تطبيق Android تجريبي خفيف (`arm64-v8a` فقط) لاختبار استخراج واستبدال مسارات الصوت عبر **GStreamer 1.28.9** من اشتراك IPTV واحد (Xtream Codes أو رابط M3U واحد).
 
 ## المعمارية
 
-- **Video Pipeline A (`playbin` / `glimagesink` / `ANativeWindow`):** تشغيل فيديو القناة الأساسية مع إمكانية كتم صوتها (`mute`) دون إعادة تشغيل الفيديو.
-- **Audio Pipeline B (`souphttpsrc` -> `decodebin` -> `audioconvert` -> `audioresample` -> `openslessink` / `aaudiosink`):** استخراج وتشغيل الصوت من القناة المختارة بشكل مستقل مع ضبط التأخير (ms) والمزامنة.
-- **واجهة Jetpack Compose (شاشة واحدة):** حقول اشتراك IPTV، قائمة القنوات، عارض الفيديو، اختيار مصدر الصوت البديل، التحكم بالتأخير، مؤشرات الحالة، وسجل تشخيصي مختصر.
-
-## البنية الأساسية
-
-- `app/src/main/jni/sonix_gstreamer.c` & `Android.mk`: طبقة JNI ومسارات GStreamer المزدوجة.
-- `app/prebuiltJniLibs/{arm64-v8a,armeabi-v7a}/`: ثنائيات `libgstreamer_android.so` و`libsonix_gst.so` المبنية مسبقاً للعمل في بيئات CI مثل GitHub Actions.
-- `app/src/main/java/com/example/gst/`: جسر GStreamer وإدارة حالتي الفيديو والصوت.
-- `app/src/main/java/com/example/iptv/`: عميل Xtream Codes ومحلل قوائم M3U.
-- `app/src/main/java/com/example/ui/`: واجهة الشاشة الواحدة بـ Jetpack Compose.
-- `.github/workflows/android-apk.yml`: تشغيل اختبارات الوحدة وبناء Debug APK على GitHub Actions (مع دعم Release APK عند توفر أسرار التوقيع).
+- **Video Pipeline A (`uridecodebin` + `glimagesink`):** تشغيل فيديو القناة الأساسية بتفضيل مفككات MediaCodec العتادية (`amcviddec*`) والتحقق من أول إطار فيديو فعلي قبل إعلان `PLAYING`. يتم إيقاف مسار صوت A وإسقاط حزمه قبل أي مفكك صوت عبر `valve` + إزالة فرع فك الترميز عند تفعيل الصوت الخارجي B.
+- **Audio Pipeline B (`input-selector` + `openslessink`):** استخراج الصوت فقط (تجاهل مسارات الفيديو والترجمة عبر `autoplug-select` دون إنشاء أي Video Decoder أو MediaCodec لقناة الصوت)، مع دعم إدارة مصدر نشط ومصدر مرشح للتبديل الآمن B → C دون قطع الفيديو أو الصوت الحالي قبل جاهزية المرشح.
+- **تحكم ومزامنة:** دوال مستقلة للفيديو والصوت (`nativeSetVideoPaused` / `nativeSetAudioPaused`)، وتتبع حقيقي لـ `PTS`/`DTS`/`running-time`/`clock` وتعويض الانجراف دون إخفاء غياب البيانات الزمنية، وفحص `max_connections` و`active_cons` دون طلبات PROBE مكررة.
+- **توافق التشغيل على Android ARM64:** بناء `arm64-v8a` فقط عبر NDK `27.2.12479018` و`APP_STL := c++_shared` مع تضمين `libc++_shared.so` و`libgstreamer_android.so` و`libsonix_gst.so` وشهادات `ca-certificates.crt` داخل APK.
 
 ## البناء والاختبار
+
+يتطلب البناء توفر **GStreamer Android ARM64 SDK (`1.28.9`)** في `GSTREAMER_ROOT_ANDROID` (افتراضياً `/opt/gstreamer-android`) و**NDK `27.2.12479018`** و`pkg-config`.
 
 - **اختبارات الوحدة:**
   ```bash
   gradle :app:testDebugUnitTest
   ```
-- **بناء Debug APK:**
+- **بناء Debug APK (ARM64 فقط):**
   ```bash
   gradle :app:assembleDebug
   ```

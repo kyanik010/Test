@@ -123,6 +123,7 @@ fun SonixLabScreen(
     onDetachAudioOnly: () -> Unit,
     onTestAudioReconnect: () -> Unit,
     onTogglePause: () -> Unit,
+    onToggleAudioPause: () -> Unit = {},
     onDelayChange: (Long) -> Unit,
     onDelayStep: (Long) -> Unit,
     onClearLogs: () -> Unit,
@@ -193,6 +194,7 @@ fun SonixLabScreen(
                                 onRestoreOriginalAudio = onRestoreOriginalAudio,
                                 onDetachAudioOnly = onDetachAudioOnly,
                                 onTestAudioReconnect = onTestAudioReconnect,
+                                onToggleAudioPause = onToggleAudioPause,
                                 onDelayChange = onDelayChange,
                                 onDelayStep = onDelayStep
                             )
@@ -246,6 +248,7 @@ fun SonixLabScreen(
                             onRestoreOriginalAudio = onRestoreOriginalAudio,
                             onDetachAudioOnly = onDetachAudioOnly,
                             onTestAudioReconnect = onTestAudioReconnect,
+                            onToggleAudioPause = onToggleAudioPause,
                             onDelayChange = onDelayChange,
                             onDelayStep = onDelayStep
                         )
@@ -676,16 +679,16 @@ private fun SyncAndTelemetryCard(state: SonixLabUiState) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 StatusBox(
                     modifier = Modifier.weight(1f),
-                    title = "الفيديو A",
-                    value = gst.videoState.labelAr,
-                    sub = "موضع: ${gst.videoPositionMs}ms • إعادات: ${gst.videoRestartCount}",
+                    title = "الفيديو A (${gst.videoContainerKind})",
+                    value = if (gst.videoFirstFrameVerified) "${gst.videoState.labelAr} (أول إطار ✓)" else gst.videoState.labelAr,
+                    sub = "موضع: ${gst.videoPositionMs}ms • مفكك صوت A: ${if (gst.audioADecoderActive) "نشط" else "مفرّغ"}",
                     accent = SonixFocusBlue
                 )
                 StatusBox(
                     modifier = Modifier.weight(1f),
                     title = "الصوت النشط",
                     value = gst.audioMode.labelAr,
-                    sub = "${gst.audioState.labelAr} • ${gst.audioDecoder}",
+                    sub = "${gst.audioState.labelAr} • ${gst.audioDecoder} | فك فيديو B=${gst.audioBVideoDecodersCreated}",
                     accent = if (gst.audioMode == ActiveAudioMode.EXTERNAL_B) SonixSuccessGreen else SonixAccentGold
                 )
             }
@@ -695,28 +698,43 @@ private fun SyncAndTelemetryCard(state: SonixLabUiState) {
                     modifier = Modifier.weight(1f),
                     title = "وضع الاستخراج B",
                     value = gst.audioExtractionMode,
-                    sub = "موضع B: ${gst.audioPositionMs}ms",
+                    sub = "PTS(A)=${if (gst.videoPtsMs >= 0) "${gst.videoPtsMs}ms" else "—"} | PTS(B)=${if (gst.audioPtsMs >= 0) "${gst.audioPtsMs}ms" else "—"}",
                     accent = SonixTextSilver
                 )
                 StatusBox(
                     modifier = Modifier.weight(1f),
-                    title = "المزامنة والانحراف",
-                    value = "إزاحة: ${gst.audioDelayMs}ms | فرق: ${gst.measuredDriftMs}ms",
-                    sub = "محاولات إعادة الاتصال: ${gst.audioReconnectAttempt} • Heap ${state.telemetry.nativeHeapMb}MB",
-                    accent = if (kotlin.math.abs(gst.measuredDriftMs) > 400L) SonixDangerRed else SonixSuccessGreen
+                    title = "المزامنة الحقيقية (PTS/Clock)",
+                    value = if (gst.hasValidSyncTiming) {
+                        "إزاحة: ${gst.audioDelayMs}ms | انحراف: ${gst.measuredDriftMs}ms"
+                    } else {
+                        "إزاحة يدوية: ${gst.audioDelayMs}ms (بانتظار PTS)"
+                    },
+                    sub = if (gst.hasValidSyncTiming) {
+                        "انجراف ساعة: ${gst.clockSkewMs}ms • إعادة: ${gst.audioReconnectAttempt}"
+                    } else {
+                        "لا تتوفر بيانات PTS كافية لحساب انحراف تلقائي"
+                    },
+                    accent = if (gst.hasValidSyncTiming && kotlin.math.abs(gst.measuredDriftMs) > 400L) SonixDangerRed else SonixSuccessGreen
                 )
             }
 
-            state.videoStructureReport?.let { rep ->
-                Text(
-                    text = "فحص A: ${rep.summary}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = SonixTextSilver
-                )
+            state.providerLimitNotice?.let { limitMsg ->
+                Surface(
+                    color = SonixDangerRed.copy(alpha = 0.14f),
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, SonixDangerRed.copy(alpha = 0.6f))
+                ) {
+                    Text(
+                        text = limitMsg,
+                        modifier = Modifier.padding(8.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = SonixDangerRed
+                    )
+                }
             }
             state.audioStructureReport?.let { rep ->
                 Text(
-                    text = "فحص B: ${rep.summary}",
+                    text = "مصدر B: ${rep.summary}",
                     style = MaterialTheme.typography.labelSmall,
                     color = SonixAccentGold
                 )
@@ -767,6 +785,7 @@ private fun AudioDelayAndControlCard(
     onRestoreOriginalAudio: () -> Unit,
     onDetachAudioOnly: () -> Unit,
     onTestAudioReconnect: () -> Unit,
+    onToggleAudioPause: () -> Unit,
     onDelayChange: (Long) -> Unit,
     onDelayStep: (Long) -> Unit
 ) {
@@ -833,16 +852,33 @@ private fun AudioDelayAndControlCard(
                 }
             }
 
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                OutlinedButton(
+                    onClick = onToggleAudioPause,
+                    enabled = state.activeAudioChannel != null,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(48.dp)
+                        .testTag("pause_audio_button"),
+                    contentPadding = PaddingValues(horizontal = 4.dp)
+                ) {
+                    Text(
+                        text = if (state.gstState.audioPaused) "استئناف B" else "إيقاف B مؤقتاً",
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
                 OutlinedButton(
                     onClick = onDetachAudioOnly,
                     enabled = state.activeAudioChannel != null,
                     modifier = Modifier
                         .weight(1f)
                         .height(48.dp)
-                        .testTag("detach_audio_button")
+                        .testTag("detach_audio_button"),
+                    contentPadding = PaddingValues(horizontal = 4.dp)
                 ) {
-                    Text("فصل الصوت B فقط")
+                    Text("فصل B فقط", fontSize = 11.sp, maxLines = 1)
                 }
                 OutlinedButton(
                     onClick = onTestAudioReconnect,
@@ -850,9 +886,10 @@ private fun AudioDelayAndControlCard(
                     modifier = Modifier
                         .weight(1f)
                         .height(48.dp)
-                        .testTag("reconnect_audio_button")
+                        .testTag("reconnect_audio_button"),
+                    contentPadding = PaddingValues(horizontal = 4.dp)
                 ) {
-                    Text("اختبار إعادة اتصال B")
+                    Text("إعادة اتصال B", fontSize = 11.sp, maxLines = 1)
                 }
             }
 

@@ -6,17 +6,62 @@ import com.example.audio.HlsMasterPlaylistParser
 import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Inspects actual IPTV stream structure (HLS Master/Media vs MPEG-TS PAT/PMT PIDs)
- * before handing the URL to GStreamer.
+ * Inspects IPTV stream playlists ONLY when needed (cached HLS Master #EXT-X-MEDIA Audio Renditions)
+ * so GStreamer handles container detection directly without double-downloading streams.
  */
 object StreamStructureInspector {
 
     private const val USER_AGENT = "SONIX-TV/1.0"
-    private const val PROBE_BYTES = 64 * 1024
+    private const val PROBE_BYTES = 24 * 1024
+    private const val CACHE_TTL_MS = 5 * 60 * 1000L
 
-    fun inspectRemote(streamUrl: String): StreamStructureReport {
+    private data class CachedReport(val timestampMs: Long, val report: StreamStructureReport)
+
+    private val reportCache = ConcurrentHashMap<String, CachedReport>()
+
+    fun clearCache() {
+        reportCache.clear()
+    }
+
+    /**
+     * Only inspects HLS playlists (.m3u8 or unknown path) to discover independent #EXT-X-MEDIA:TYPE=AUDIO
+     * renditions, avoiding extra HTTP sessions for MPEG-TS (.ts) and repeated probing of the same URL.
+     */
+    fun inspectForAudioRenditionIfHls(streamUrl: String): StreamStructureReport {
+        val sanitized = CredentialSanitizer.sanitizeUrl(streamUrl)
+        val pathLower = streamUrl.substringBefore('?').lowercase()
+
+        if (pathLower.endsWith(".ts") || pathLower.endsWith(".aac") || pathLower.endsWith(".mp3")) {
+            return StreamStructureReport(
+                sanitizedUrl = sanitized,
+                resolvedPlaybackUrl = streamUrl,
+                httpStatus = 0,
+                contentType = "direct-media",
+                containerKind = if (pathLower.endsWith(".ts")) "MPEG-TS" else "Audio Direct",
+                hasCombinedVideoAndAudio = pathLower.endsWith(".ts"),
+                hasIndependentAudioRendition = !pathLower.endsWith(".ts"),
+                summary = "تمرير مباشر إلى GStreamer بدون PROBE إضافي (تجنب استهلاك اتصال إضافي)"
+            )
+        }
+
+        val now = System.currentTimeMillis()
+        reportCache[streamUrl]?.let { cached ->
+            if (now - cached.timestampMs < CACHE_TTL_MS) {
+                return cached.report.copy(summary = "${cached.report.summary} [من الذاكرة المؤقتة]")
+            }
+        }
+
+        val report = inspectRemote(streamUrl, stopIfBinaryTs = true)
+        if (report.errorMessage == null) {
+            reportCache[streamUrl] = CachedReport(now, report)
+        }
+        return report
+    }
+
+    fun inspectRemote(streamUrl: String, stopIfBinaryTs: Boolean = false): StreamStructureReport {
         val sanitized = CredentialSanitizer.sanitizeUrl(streamUrl)
         return try {
             var currentUrl = streamUrl
@@ -29,7 +74,7 @@ object StreamStructureInspector {
                     readTimeout = 10_000
                     instanceFollowRedirects = false
                     setRequestProperty("User-Agent", USER_AGENT)
-                    setRequestProperty("Accept", "*/*")
+                    setRequestProperty("Accept", "application/vnd.apple.mpegurl, application/x-mpegurl, text/plain, */*")
                 }
                 try {
                     val code = conn.responseCode
@@ -57,8 +102,21 @@ object StreamStructureInspector {
                         )
                     }
 
+                    if (stopIfBinaryTs && contentType.contains("mp2t", ignoreCase = true)) {
+                        return StreamStructureReport(
+                            sanitizedUrl = sanitized,
+                            resolvedPlaybackUrl = currentUrl,
+                            httpStatus = code,
+                            contentType = contentType,
+                            containerKind = "MPEG-TS",
+                            hasCombinedVideoAndAudio = true,
+                            hasIndependentAudioRendition = false,
+                            summary = "MPEG-TS — إغلاق الفحص فوراً وتسليمه لـ GStreamer لفصل الصوت فقط"
+                        )
+                    }
+
                     val sample = ByteArrayOutputStream()
-                    val buf = ByteArray(8192)
+                    val buf = ByteArray(4096)
                     conn.inputStream.use { input ->
                         var total = 0
                         while (total < PROBE_BYTES) {
@@ -66,6 +124,10 @@ object StreamStructureInspector {
                             if (n <= 0) break
                             sample.write(buf, 0, n)
                             total += n
+                            // If first bytes are MPEG-TS sync (0x47), abort reading early to avoid wasting bandwidth
+                            if (stopIfBinaryTs && sample.size() >= 377 && findTsSyncOffset(sample.toByteArray()) >= 0) {
+                                break
+                            }
                         }
                     }
                     return analyzeBytes(

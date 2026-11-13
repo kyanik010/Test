@@ -6,6 +6,7 @@ LOCAL_MODULE := sonix_gst
 LOCAL_SRC_FILES := sonix_gstreamer.c
 LOCAL_SHARED_LIBRARIES := gstreamer_android
 LOCAL_LDLIBS := -llog -landroid
+LOCAL_CFLAGS := -Wall -Wno-unused-parameter -Werror=implicit-function-declaration
 
 include $(BUILD_SHARED_LIBRARY)
 
@@ -13,12 +14,10 @@ ifndef GSTREAMER_ROOT_ANDROID
 GSTREAMER_ROOT_ANDROID := /opt/gstreamer-android
 endif
 
-ifeq ($(TARGET_ARCH_ABI),armeabi-v7a)
-GSTREAMER_ROOT := $(GSTREAMER_ROOT_ANDROID)/armv7
-else ifeq ($(TARGET_ARCH_ABI),arm64-v8a)
+ifeq ($(TARGET_ARCH_ABI),arm64-v8a)
 GSTREAMER_ROOT := $(GSTREAMER_ROOT_ANDROID)/arm64
 else
-$(error Target arch ABI $(TARGET_ARCH_ABI) not supported)
+$(error SONIX GStreamer Lab supports arm64-v8a (AArch64) only; unsupported ABI: $(TARGET_ARCH_ABI))
 endif
 
 GSTREAMER_NDK_BUILD_PATH := $(GSTREAMER_ROOT)/share/gst-android/ndk-build/

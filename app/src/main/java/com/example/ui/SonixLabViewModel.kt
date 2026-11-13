@@ -18,6 +18,7 @@ import com.example.iptv.SubscriptionMode
 import com.example.telemetry.SystemTelemetryMonitor
 import com.example.telemetry.SystemTelemetrySnapshot
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -45,6 +46,7 @@ data class SonixLabUiState(
     val subscriptionExpanded: Boolean = true,
     val isLoadingCatalog: Boolean = false,
     val catalogError: String? = null,
+    val providerLimitNotice: String? = null,
     val accountInfo: IptvAccountInfo? = null,
     val allChannels: List<IptvChannel> = emptyList(),
     val searchQuery: String = "",
@@ -68,9 +70,10 @@ class SonixLabViewModel(application: Application) : AndroidViewModel(application
     private val gstEngine = SonixGStreamerEngine(application.applicationContext, this)
     private val telemetryMonitor = SystemTelemetryMonitor()
     private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.US)
+    private var audioInspectJob: Job? = null
 
     init {
-        onGstLog("SYS", "بدء مختبر SONIX GStreamer Lab | معماريات الجهاز: ${android.os.Build.SUPPORTED_ABIS.joinToString(", ")}")
+        onGstLog("SYS", "بدء مختبر SONIX GStreamer Lab (arm64-v8a) | معماريات الجهاز: ${android.os.Build.SUPPORTED_ABIS.joinToString(", ")}")
         gstEngine.initialize()
 
         viewModelScope.launch {
@@ -108,8 +111,9 @@ class SonixLabViewModel(application: Application) : AndroidViewModel(application
         val current = _uiState.value
         if (current.isLoadingCatalog) return
 
-        _uiState.update { it.copy(isLoadingCatalog = true, catalogError = null) }
-        onGstLog("IPTV", "جلب القنوات من اشتراك ${if (current.subscriptionMode == SubscriptionMode.XTREAM) "Xtream Codes" else "M3U"}...")
+        StreamStructureInspector.clearCache()
+        _uiState.update { it.copy(isLoadingCatalog = true, catalogError = null, providerLimitNotice = null) }
+        onGstLog("IPTV", "جلب القنوات من اشتراك ${if (current.subscriptionMode == SubscriptionMode.XTREAM) "Xtream Codes" else "M3U"} واحد...")
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -125,11 +129,14 @@ class SonixLabViewModel(application: Application) : AndroidViewModel(application
 
                 loaded.warnings.forEach { warn -> onGstLog("WARN", warn) }
 
-                loaded.accountInfo?.let { acc ->
+                val limitWarning = loaded.accountInfo?.let { acc ->
                     onGstLog(
                         "AUTH",
-                        "اشتراك صالح (${acc.status}) | الحد الأقصى للاتصالات: ${acc.maxConnections ?: "غير محدد"} | الصيغ: ${acc.allowedFormats.joinToString(",")}"
+                        "اشتراك صالح (${acc.status}) | الاتصالات: active=${acc.activeConnections ?: 0} / max=${acc.maxConnections ?: "غير محدد"} | الصيغ: ${acc.allowedFormats.joinToString(",")}"
                     )
+                    if (acc.maxConnections != null && acc.maxConnections <= 1) {
+                        "قيد مزود الخدمة: max_connections=${acc.maxConnections} (active=${acc.activeConnections ?: 0}). لا يمكن فتح قناتين مستقلتين بالتوازي من هذا الاشتراك."
+                    } else null
                 }
 
                 val channels = loaded.channels
@@ -139,6 +146,7 @@ class SonixLabViewModel(application: Application) : AndroidViewModel(application
                     it.copy(
                         isLoadingCatalog = false,
                         accountInfo = loaded.accountInfo,
+                        providerLimitNotice = limitWarning,
                         allChannels = channels,
                         subscriptionExpanded = channels.isEmpty()
                     )
@@ -159,13 +167,8 @@ class SonixLabViewModel(application: Application) : AndroidViewModel(application
                 isPaused = false
             )
         }
+        /* No extra HTTP PROBE-A connection: GStreamer inspects container/codecs directly from the stream! */
         gstEngine.playVideoChannel(channel.streamUrl, channel.name)
-
-        viewModelScope.launch(Dispatchers.IO) {
-            val report = StreamStructureInspector.inspectRemote(channel.streamUrl)
-            _uiState.update { it.copy(videoStructureReport = report) }
-            onGstLog("PROBE-A", "[${channel.name}] ${report.summary}")
-        }
     }
 
     fun selectAudioCandidate(channel: IptvChannel) {
@@ -173,31 +176,45 @@ class SonixLabViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun activateSelectedAudio() {
-        val candidate = _uiState.value.selectedAudioCandidate ?: return
-        val activeVideo = _uiState.value.activeVideoChannel
+        val snapshot = _uiState.value
+        val candidate = snapshot.selectedAudioCandidate ?: return
+        val activeVideo = snapshot.activeVideoChannel
+
         if (activeVideo != null && activeVideo.id == candidate.id && activeVideo.streamUrl == candidate.streamUrl) {
             onGstLog("WARN", "القناة المختارة للصوت هي نفس قناة الفيديو الحالية — سيتم استخدام الصوت الأصلي A")
             return
         }
 
+        val maxCons = snapshot.accountInfo?.maxConnections
+        val activeCons = snapshot.accountInfo?.activeConnections ?: 0
+        if (maxCons != null && maxCons <= 1 && activeVideo != null) {
+            val msg = "غير مدعوم من مزود الخدمة: الاشتراك يسمح باتصال متزامن واحد فقط " +
+                "(max_connections=$maxCons, active_cons=$activeCons) ولا يوفّر دمج قناتين مستقلتين في جلسة واحدة. " +
+                "لن يتم التحايل أو استخدام اشتراك ثانٍ أو فتح اتصال ثانٍ يقطع الفيديو A."
+            onGstLog("WARN", msg)
+            _uiState.update { it.copy(providerLimitNotice = msg) }
+            return
+        }
+
+        audioInspectJob?.cancel()
         _uiState.update {
             it.copy(
                 activeAudioChannel = candidate,
                 isInspectingAudio = true,
-                audioStructureReport = null
+                audioStructureReport = null,
+                providerLimitNotice = null
             )
         }
 
-        viewModelScope.launch(Dispatchers.IO) {
-            onGstLog("PROBE-B", "فحص بنية البث لقناة الصوت [${candidate.name}]...")
-            val report = StreamStructureInspector.inspectRemote(candidate.streamUrl)
+        audioInspectJob = viewModelScope.launch(Dispatchers.IO) {
+            val report = StreamStructureInspector.inspectForAudioRenditionIfHls(candidate.streamUrl)
             _uiState.update { it.copy(audioStructureReport = report, isInspectingAudio = false) }
-            onGstLog("PROBE-B", "[${candidate.name}] ${report.summary}")
+            onGstLog("AUD-SRC", "[${candidate.name}] ${report.summary}")
 
             val targetUrl = report.audioOnlyUrl ?: candidate.streamUrl
             val modeLabel = when {
                 report.hasIndependentAudioRendition -> "HLS Audio-Only Rendition"
-                report.containerKind == "MPEG-TS" -> "MPEG-TS Audio Demux (تجاهل الفيديو)"
+                report.containerKind == "MPEG-TS" -> "MPEG-TS Audio Demux (دون فك فيديو B)"
                 else -> "${report.containerKind} (استخراج الصوت فقط)"
             }
             gstEngine.attachOrSwitchExternalAudio(targetUrl, candidate.name, modeLabel)
@@ -205,12 +222,14 @@ class SonixLabViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun restoreOriginalAudio() {
-        _uiState.update { it.copy(activeAudioChannel = null) }
+        audioInspectJob?.cancel()
+        _uiState.update { it.copy(activeAudioChannel = null, isInspectingAudio = false) }
         gstEngine.detachExternalAudio(restoreOriginalA = true)
     }
 
     fun detachExternalAudioOnly() {
-        _uiState.update { it.copy(activeAudioChannel = null) }
+        audioInspectJob?.cancel()
+        _uiState.update { it.copy(activeAudioChannel = null, isInspectingAudio = false) }
         gstEngine.detachExternalAudio(restoreOriginalA = false)
     }
 
@@ -222,6 +241,11 @@ class SonixLabViewModel(application: Application) : AndroidViewModel(application
         val nextPaused = !_uiState.value.isPaused
         _uiState.update { it.copy(isPaused = nextPaused) }
         gstEngine.setVideoPaused(nextPaused)
+    }
+
+    fun toggleAudioPause() {
+        val nextPaused = !_uiState.value.gstState.audioPaused
+        gstEngine.setAudioPaused(nextPaused)
     }
 
     fun adjustAudioDelayMs(deltaMs: Long) {
@@ -245,11 +269,12 @@ class SonixLabViewModel(application: Application) : AndroidViewModel(application
             message = CredentialSanitizer.sanitizeMessage(message)
         )
         _uiState.update { state ->
-            state.copy(logs = (listOf(entry) + state.logs).take(120))
+            state.copy(logs = (listOf(entry) + state.logs).take(150))
         }
     }
 
     override fun onCleared() {
+        audioInspectJob?.cancel()
         gstEngine.release()
         super.onCleared()
     }

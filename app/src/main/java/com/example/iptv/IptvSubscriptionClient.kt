@@ -62,7 +62,9 @@ object IptvSubscriptionClient {
         }
 
         if (maxCons != null && maxCons <= 1) {
-            warnings += "تحذير مزود IPTV: الاشتراك يسمح باتصال متزامن واحد فقط (max_connections=$maxCons). فتح قناتين معاً قد يرفضه الخادم (403/509) أو يقطع الفيديو."
+            warnings += "قيد مزود IPTV: الاشتراك يسمح باتصال متزامن واحد فقط (max_connections=$maxCons, active_cons=${activeCons ?: 0}). لا يمكن دمج قناتين مستقلتين في جلسة واحدة؛ تشغيل صوت B مع فيديو A غير مدعوم على هذا الحد."
+        } else if (maxCons != null && activeCons != null && activeCons >= maxCons) {
+            warnings += "تنبيه اتصالات المزود: الاتصالات النشطة حالياً ($activeCons/$maxCons) وصلت الحد الأقصى وقد يرفض الخادم فتح مسار إضافي."
         }
 
         val preferredExt = when (formatPreference) {

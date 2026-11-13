@@ -137,4 +137,23 @@ class SonixGStreamerLabTests {
         assertEquals(0x0102, report.tsPids[1].pid)
         assertFalse(report.sanitizedUrl.contains("p/10") && report.sanitizedUrl.contains("/u/"))
     }
+
+    @Test
+    fun streamInspector_skipsRemoteHttpProbeForDirectTsUrls() {
+        StreamStructureInspector.clearCache()
+        val report = StreamStructureInspector.inspectForAudioRenditionIfHls(
+            "http://nonexistent.invalid:9999/live/user/pass/101.ts"
+        )
+        assertEquals("MPEG-TS", report.containerKind)
+        assertEquals(0, report.httpStatus)
+        assertTrue(report.hasCombinedVideoAndAudio)
+        assertFalse(report.hasIndependentAudioRendition)
+    }
+
+    @Test
+    fun syncPolicy_returnsNeutralRateInsideTolerance_andAdjustsOutside() {
+        assertEquals(1.0f, ExternalAudioSyncPolicy.livePlaybackSpeed(1000L, 1080L, 0L))
+        assertEquals(1.02f, ExternalAudioSyncPolicy.livePlaybackSpeed(1000L, 1400L, 0L))
+        assertEquals(0.98f, ExternalAudioSyncPolicy.livePlaybackSpeed(1400L, 1000L, 0L))
+    }
 }
